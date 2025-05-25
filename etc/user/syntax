@@ -1,0 +1,21 @@
+// example: userName::uid:gid::"homeDir":"shellExecDir"::permFlags::dirAccess"/System/Boot"ro:"/System/Users/userName"rw:
+
+// permFlags:
+/*
+r  = read files
+w  = write files
+x  = execute binaries
+s  = shell access
+a  = admin privileges (can modify users/system)
+m  = mount volumes
+n  = network access
+d  = device access (e.g., USB, serial)
+l  = log access
+t  = time management (change system clock)
+c  = config access (edit system config files)
+b  = boot access (can modify /System/Boot)
+u  = user management (add/remove users)
+
+Example: rwxs = read, write, execute, and shell access
+*/
+

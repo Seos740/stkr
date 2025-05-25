@@ -1,0 +1,7 @@
+subsystem KBD 1000;
+
+#include <mach/std_types.defs>
+
+routine kbd_read(
+    out data: array[] of char
+);

@@ -1,0 +1,7 @@
+subsystem MOUSE 1100;
+
+#include <mach/std_types.defs>
+
+routine mouse_read(
+    out data: array[] of char
+);

@@ -1,9 +1,22 @@
 #include <string.h>
 #include <stdio.h>
 #include "stkr_user.h"
+#include <file_io.h>
+
+const char *master_device_port = "/dev/";
+int get_buffer_values(int bufferMultiplySize) {
+    // Multiply to get the correct storage data space
+    int bufferValueSize = ((bufferMultiplySize^(2)) / 4096);
+}
+
+int buffer_values = (get_buffer_values(12) * 4096);
 
 int main() {
-    
+    // Load UIDs and GIDs
+    FILE *fp; open_file(master_device_port, "/etc/user/uid", &fp);
+    char buffer[buffer_values]; fread(buffer, 1, sizeof(buffer)-1, fp); buffer[4195] = '\0'; fclose(fp);
+
+    int uidParseResult = parse_uid_list(buffer);
 }
 
 void clear_user(struct userParams* user) {
@@ -19,7 +32,7 @@ int extract_token(const char* src, int start, char delimiter, char* dest, int ma
     return src[start] == delimiter ? start + 1 : start;
 }
 
-int parse_uid_list(char uid_list[4196]) {
+int parse_uid_list(char uid_list[buffer_values]) {
     int pos = 0;
     userCount = 0;
 

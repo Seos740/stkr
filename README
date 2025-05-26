@@ -1,17 +1,21 @@
-*sktrX kernel*
+# sktrX kernel
 
 Welcome to the `sktrX` kernel source tree!
 
-`sktrX` is a Mach3-based kernel designed to improve upon it with things such as:
+The `sktrX` kernel is a Mach3-based marvel, crafted to elevate its predecessor by introducing such splendid features as:
 
-- FAT32 Support [✅]
-- Multi-user interface for permissions [½]
-- Multi-Process support [½]
-- An interface for both hardware and software 'drivers' [❌]
-- A unified syscall interface [❌]
+- **FAT32 Support** ✅  
+- **Multi-user interface for permissions** ½  
+- **Multi-Process support** ½  
+- **An interface for both hardware and software 'drivers'** ❌  
+- **A unified syscall interface** ❌  
 
-Key:
+---
 
-[✅] - Done
-[½] - In active development
-[❌] - Not started
+**Key:**
+
+| Symbol | Meaning             |
+|--------|---------------------|
+| ✅      | Completed           |
+| ½      | In active development |
+| ❌      | Not started         |

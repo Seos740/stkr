@@ -1,5 +1,3 @@
-# sktrX kernel
-
 Welcome to the `sktrX` kernel source tree!
 
 The `sktrX` kernel is a Mach3-based marvel, crafted to elevate its predecessor by introducing such splendid features as:

@@ -5,15 +5,20 @@
 #define BUFFER_MULTIPLY_SIZE 12
 #define PAGE_SIZE 4096
 #define MAX_PERMISSIONS 32
+#define STACK_SIZE (16 * PAGE_SIZE)
 
+int highest_used_pid = 0;
+int current_pid = 1;
 const char *master_device_port = "/dev/";
-
 int userCount = 0;
 
 typedef struct {
     char procName[256];
     char pid[8];
     char ownerUID[8];
+    void *codePointer;
+    thread_act_t thread;  // Added: Mach thread handle
+    void *stack;          // Added: pointer to allocated stack
 } procTemp;
 
 typedef struct {
@@ -21,6 +26,8 @@ typedef struct {
     size_t size;
     size_t capacity;
 } ProcTable;
+
+ProcTable globalProcTable;
 
 // -- Memory Management --
 
@@ -39,7 +46,6 @@ void* mach_realloc(void *ptr, size_t old_size, size_t new_size) {
     void *new_ptr = mach_malloc(new_size);
     if (!new_ptr) return NULL;
 
-    // Manual memory copy
     for (size_t i = 0; i < (old_size < new_size ? old_size : new_size); i++) {
         ((char *)new_ptr)[i] = ((char *)ptr)[i];
     }
@@ -88,7 +94,7 @@ int parse_uid_list(char *uid_list) {
         clear_user(user);
 
         pos = extract_token(uid_list, pos, ':', user->userName, sizeof(user->userName));
-        pos++; // skip ::
+        pos++;
 
         pos = extract_token(uid_list, pos, ':', user->UID, sizeof(user->UID));
         pos = extract_token(uid_list, pos, ':', user->GID, sizeof(user->GID));
@@ -148,49 +154,100 @@ int parse_uid_list(char *uid_list) {
 
 // -- Process Table --
 
-ProcTable* proccessTableSetup() {
+int proccessTableSetup() {
     size_t initialCapacity = 10;
 
-    ProcTable *procTable = (ProcTable *)mach_malloc(sizeof(ProcTable));
-    if (!procTable) return NULL;
+    globalProcTable.table = (procTemp *)mach_malloc(sizeof(procTemp) * initialCapacity);
+    if (!globalProcTable.table) return -1;
 
-    procTable->table = (procTemp *)mach_malloc(sizeof(procTemp) * initialCapacity);
-    if (!procTable->table) {
-        mach_free(procTable, sizeof(ProcTable));
-        return NULL;
-    }
+    globalProcTable.size = 0;
+    globalProcTable.capacity = initialCapacity;
 
-    procTable->size = 0;
-    procTable->capacity = initialCapacity;
-
-    return procTable;
-}
-
-int addProcessEntry(ProcTable *procTable, const char *name, const char *pid, const char *uid) {
-    if (procTable->size == procTable->capacity) {
-        size_t newCapacity = procTable->capacity * 2;
-        size_t old_size = sizeof(procTemp) * procTable->capacity;
-        size_t new_size = sizeof(procTemp) * newCapacity;
-
-        procTemp *newTable = (procTemp *)mach_realloc(procTable->table, old_size, new_size);
-        if (!newTable) return -1;
-
-        procTable->table = newTable;
-        procTable->capacity = newCapacity;
-    }
-
-    safe_strcpy(procTable->table[procTable->size].procName, name, sizeof(procTable->table[procTable->size].procName));
-    safe_strcpy(procTable->table[procTable->size].pid, pid, sizeof(procTable->table[procTable->size].pid));
-    safe_strcpy(procTable->table[procTable->size].ownerUID, uid, sizeof(procTable->table[procTable->size].ownerUID));
-
-    procTable->size++;
     return 0;
 }
 
-void proccessTableCleanup(ProcTable *procTable) {
-    if (!procTable) return;
-    mach_free(procTable->table, sizeof(procTemp) * procTable->capacity);
-    mach_free(procTable, sizeof(ProcTable));
+int addProcessEntry(const char *name, const char *pid, const char *uid, void *codePtr) {
+    if (globalProcTable.size == globalProcTable.capacity) {
+        size_t newCapacity = globalProcTable.capacity * 2;
+        size_t old_size = sizeof(procTemp) * globalProcTable.capacity;
+        size_t new_size = sizeof(procTemp) * newCapacity;
+
+        procTemp *newTable = (procTemp *)mach_realloc(globalProcTable.table, old_size, new_size);
+        if (!newTable) return -1;
+
+        globalProcTable.table = newTable;
+        globalProcTable.capacity = newCapacity;
+    }
+
+    procTemp *entry = &globalProcTable.table[globalProcTable.size];
+
+    safe_strcpy(entry->procName, name, sizeof(entry->procName));
+    safe_strcpy(entry->pid, pid, sizeof(entry->pid));
+    safe_strcpy(entry->ownerUID, uid, sizeof(entry->ownerUID));
+    entry->codePointer = codePtr;
+
+    // === Mach thread creation ===
+    void *stack = mach_malloc(STACK_SIZE);
+    if (!stack) return -1;
+
+    thread_act_t thread;
+    kern_return_t kr = thread_create(mach_task_self(), &thread);
+    if (kr != KERN_SUCCESS) {
+        mach_free(stack, STACK_SIZE);
+        return -1;
+    }
+
+    x86_thread_state64_t state;
+    mem_zero(&state, sizeof(state));
+
+    state.__rip = (uint64_t)codePtr;
+    uint64_t stack_top = (uint64_t)stack + STACK_SIZE - 8;
+    stack_top &= ~0xFULL; // 16-byte align
+    state.__rsp = stack_top;
+    state.__rbp = 0;
+    state.__rflags = 0x200; // Interrupt enable flag
+
+    kr = thread_set_state(thread, x86_THREAD_STATE64, (thread_state_t)&state, x86_THREAD_STATE64_COUNT);
+    if (kr != KERN_SUCCESS) {
+        thread_terminate(thread);
+        mach_free(stack, STACK_SIZE);
+        return -1;
+    }
+
+    kr = thread_resume(thread);
+    if (kr != KERN_SUCCESS) {
+        thread_terminate(thread);
+        mach_free(stack, STACK_SIZE);
+        return -1;
+    }
+
+    entry->thread = thread;
+    entry->stack = stack;
+    // === End Mach thread creation ===
+
+    globalProcTable.size++;
+
+    int pid_num = str_to_int(pid);
+    if (pid_num > highest_used_pid) {
+        highest_used_pid = pid_num;
+    }
+
+    return 0;
+}
+
+void proccessTableCleanup() {
+    if (!globalProcTable.table) return;
+
+    // Terminate threads and free stacks
+    for (size_t i = 0; i < globalProcTable.size; i++) {
+        thread_terminate(globalProcTable.table[i].thread);
+        mach_free(globalProcTable.table[i].stack, STACK_SIZE);
+    }
+
+    mach_free(globalProcTable.table, sizeof(procTemp) * globalProcTable.capacity);
+    globalProcTable.table = NULL;
+    globalProcTable.size = 0;
+    globalProcTable.capacity = 0;
 }
 
 // -- Buffer Size Calculation --
@@ -202,8 +259,7 @@ int get_buffer_values(int bufferMultiplySize) {
 // -- Main Logic --
 
 int main() {
-    ProcTable *ptable = proccessTableSetup();
-    if (!ptable) return 1;
+    if (proccessTableSetup() != 0) return 1;
 
     int buffer_bytes = get_buffer_values(BUFFER_MULTIPLY_SIZE);
     char *buffer = (char *)mach_malloc(buffer_bytes);
@@ -217,13 +273,135 @@ int main() {
     buffer[buffer_bytes - 1] = '\0';
 
     int uidParseResult = parse_uid_list(buffer);
-    // Assume there's a log or print replacement in kernel
-    // log_info("Parsed users: ", uidParseResult);
 
-    addProcessEntry(ptable, "kernel_task", "0", "1");
+    addProcessEntry("kernel_task", "0", "1", *kernel_handler);
 
     mach_free(buffer, buffer_bytes);
-    proccessTableCleanup(ptable);
+    proccessTableCleanup();
 
     return 0;
+}
+
+int kernel_handler() {
+    for (;;) {
+        // do absolutely nothing
+    }
+}
+
+int str_equals(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return (*a == '\0' && *b == '\0');
+}
+
+// Find process by name
+procTemp* find_process_by_name(const char *name) {
+    unsigned int i = 0;
+    while (i < globalProcTable.size) {
+        if (str_equals(globalProcTable.table[i].procName, name)) {
+            return &globalProcTable.table[i];
+        }
+        i++;
+    }
+    return 0;
+}
+
+// Find process by PID
+procTemp* find_process_by_pid(const char *pid) {
+    unsigned int i = 0;
+    while (i < globalProcTable.size) {
+        if (str_equals(globalProcTable.table[i].pid, pid)) {
+            return &globalProcTable.table[i];
+        }
+        i++;
+    }
+    return 0;
+}
+
+// Find process by code pointer
+procTemp* find_process_by_pointer(void *pointer) {
+    unsigned int i = 0;
+    while (i < globalProcTable.size) {
+        if (globalProcTable.table[i].codePointer == pointer) {
+            return &globalProcTable.table[i];
+        }
+        i++;
+    }
+    return 0;
+}
+
+int str_to_int(const char *str) {
+    int result = 0;
+    int i = 0;
+    while (str[i] >= '0' && str[i] <= '9') {
+        result = result * 10 + (str[i] - '0');
+        i++;
+    }
+    return result;
+}
+
+int change_process_code_by_pid(const char *pid, void *new_code_ptr) {
+    procTemp *proc = find_process_by_pid(pid);
+    if (!proc) {
+        return -1; // Process with given PID not found
+    }
+
+    // Terminate old thread and free old stack
+    if (proc->thread) {
+        thread_terminate(proc->thread);
+        proc->thread = 0;
+    }
+    if (proc->stack) {
+        mach_free(proc->stack, STACK_SIZE);
+        proc->stack = NULL;
+    }
+
+    // Allocate new stack
+    void *stack = mach_malloc(STACK_SIZE);
+    if (!stack) {
+        return -1; // Failed to allocate stack
+    }
+
+    // Create new thread
+    thread_act_t thread;
+    kern_return_t kr = thread_create(mach_task_self(), &thread);
+    if (kr != KERN_SUCCESS) {
+        mach_free(stack, STACK_SIZE);
+        return -1;
+    }
+
+    // Setup thread state for x86_64
+    x86_thread_state64_t state;
+    mem_zero(&state, sizeof(state));
+
+    state.__rip = (uint64_t)new_code_ptr;
+    uint64_t stack_top = (uint64_t)stack + STACK_SIZE - 8;
+    stack_top &= ~0xFULL; // 16-byte align
+    state.__rsp = stack_top;
+    state.__rbp = 0;
+    state.__rflags = 0x200; // Interrupt enable flag
+
+    kr = thread_set_state(thread, x86_THREAD_STATE64, (thread_state_t)&state, x86_THREAD_STATE64_COUNT);
+    if (kr != KERN_SUCCESS) {
+        thread_terminate(thread);
+        mach_free(stack, STACK_SIZE);
+        return -1;
+    }
+
+    kr = thread_resume(thread);
+    if (kr != KERN_SUCCESS) {
+        thread_terminate(thread);
+        mach_free(stack, STACK_SIZE);
+        return -1;
+    }
+
+    // Update proc entry with new code pointer, thread, and stack
+    proc->codePointer = new_code_ptr;
+    proc->thread = thread;
+    proc->stack = stack;
+
+    return 0; // Success
 }
